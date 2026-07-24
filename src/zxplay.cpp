@@ -47,6 +47,11 @@
 #include "sound/service.h"
 #include "sound/sound_parameters.h"
 #include "time/instant.h"
+#include "platform/version/api.h"
+namespace Platform::Version
+{
+  const StringView PROGRAM_NAME = "ZXPlay";
+}
 
 namespace fs = std::filesystem;
 using namespace std::string_view_literals;

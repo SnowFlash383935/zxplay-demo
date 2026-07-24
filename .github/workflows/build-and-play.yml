@@ -76,19 +76,19 @@ jobs:
       - name: ccache stats
         run: ccache -s
 
-      # ---- Собранный бинарник у их make-системы лежит не пойми где по умолчанию,
-      #      поэтому ищем руками вместо того чтобы гадать путь ----
+      # ---- Собранный бинарник у их make-системы лежит здесь ----
       - name: Locate built binary
         id: locate
         working-directory: zxtune/apps/zxplay
         run: |
           BIN="$(realpath ../../bin/linux/release/zxplay)"
-          if [ -z "$BIN" ]; then
-            echo "::error::zxplay binary not found after build"
-            
+
+          if [ ! -x "$BIN" ]; then
+            echo "::error::zxplay binary not found after build: $BIN"
             exit 1
           fi
-          echo "bin=$(realpath "$BIN")" >> "$GITHUB_OUTPUT"
+
+          echo "bin=$BIN" >> "$GITHUB_OUTPUT"
 
       # ---- Собственно рендер: test/test.spc -> test.wav ----
       - name: Render test.spc to WAV
@@ -99,36 +99,73 @@ jobs:
       # ---- Красивая страничка вокруг wav-а: заголовок/автор/длительность из info.txt + <audio> ----
       - name: Build preview page
         run: |
-          TITLE="$(grep '^Title:'    out/info.txt | sed 's/^Title:[[:space:]]*//')"
-          AUTHOR="$(grep '^Author:'  out/info.txt | sed 's/^Author:[[:space:]]*//')"
+          TITLE="$(grep '^Title:' out/info.txt | sed 's/^Title:[[:space:]]*//')"
+          AUTHOR="$(grep '^Author:' out/info.txt | sed 's/^Author:[[:space:]]*//')"
           DURATION="$(grep '^Duration:' out/info.txt | sed 's/^Duration:[[:space:]]*//')"
-          cat > out/index.html <<HTML
-          <!doctype html>
+
+          export TITLE AUTHOR DURATION
+
+          python3 <<'PY'
+          import html
+          import os
+          from pathlib import Path
+
+          # Escape all externally-derived text before inserting it into HTML.
+          # quote=True also protects attribute contexts such as <title>.
+          title = html.escape(
+              os.environ.get("TITLE", ""),
+              quote=True,
+          )
+
+          author = html.escape(
+              os.environ.get("AUTHOR", ""),
+              quote=True,
+          )
+
+          duration = html.escape(
+              os.environ.get("DURATION", ""),
+              quote=True,
+          )
+
+          # zxplay output is displayed as plain text inside <pre>.
+          # Escape HTML entities so arbitrary output cannot become markup/script.
+          info = html.escape(
+              Path("out/info.txt").read_text(
+                  encoding="utf-8",
+                  errors="replace",
+              ),
+              quote=False,
+          )
+
+          page = f'''<!doctype html>
           <html lang="ru">
           <head>
             <meta charset="utf-8">
-            <title>${TITLE} — zxplay render</title>
+            <title>{title} — zxplay render</title>
             <style>
-              body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; }
-              audio { width: 100%; margin-top: 1rem; }
-              dl { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }
-              dt { font-weight: 600; color: #555; }
-              pre { background: #f4f4f4; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+              body {{ font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; }}
+              audio {{ width: 100%; margin-top: 1rem; }}
+              dl {{ display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }}
+              dt {{ font-weight: 600; color: #555; }}
+              pre {{ background: #f4f4f4; padding: 1rem; border-radius: 8px; overflow-x: auto; }}
             </style>
           </head>
           <body>
-            <h1>${TITLE}</h1>
+            <h1>{title}</h1>
             <dl>
-              <dt>Author</dt><dd>${AUTHOR}</dd>
-              <dt>Duration</dt><dd>${DURATION} ms</dd>
+              <dt>Author</dt><dd>{author}</dd>
+              <dt>Duration</dt><dd>{duration} ms</dd>
               <dt>Source</dt><dd>test/test.spc, rendered via zxplay + ZXTune</dd>
             </dl>
             <audio controls src="test.wav"></audio>
             <h2>Full zxplay output</h2>
-            <pre>$(cat out/info.txt)</pre>
+            <pre>{info}</pre>
           </body>
           </html>
-          HTML
+          '''
+
+          Path("out/index.html").write_text(page, encoding="utf-8")
+          PY
 
       # ---- Публикуем страничку + wav через artifact.ci ----
       - name: Upload preview

@@ -154,7 +154,7 @@ jobs:
             <h1>{title}</h1>
             <dl>
               <dt>Author</dt><dd>{author}</dd>
-              <dt>Duration</dt><dd>{duration} ms</dd>
+              <dt>Duration</dt><dd>{duration}</dd>
               <dt>Source</dt><dd>test/test.spc, rendered via zxplay + ZXTune</dd>
             </dl>
             <audio controls src="test.wav"></audio>

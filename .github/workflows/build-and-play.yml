@@ -135,3 +135,4 @@ jobs:
         uses: mmkal/artifact.ci/upload@main
         with:
           path: out
+          artifactci-mode: eager

@@ -1,0 +1,137 @@
+name: Build zxplay and render test.spc
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build-and-render:
+    runs-on: ubuntu-latest
+    env:
+      # Апстрим-репа не тегована по SHA, который можно узнать заранее без клонирования,
+      # так что кэш зафиксирован по этой строке. Нужен свежий клон — просто увеличь число.
+      CACHE_BUST: "1"
+    steps:
+      - name: Checkout this repo (zxplay.cpp, Makefile, test/test.spc)
+        uses: actions/checkout@v4
+
+      # ---- Зависимости. boost.program_options — то, чего не хватило в Colab ----
+      - name: Install build dependencies (boost + audio headers)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libboost-dev \
+            libboost-program-options-dev \
+            libasound2-dev \
+            libpulse-dev \
+            zlib1g-dev \
+            liblzma-dev
+
+      # ---- ccache: и сам инструмент, и кэш накопленных объектников между запусками ----
+      - name: Install ccache
+        run: sudo apt-get install -y ccache
+
+      - name: Cache ccache storage
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          # ключ намеренно широкий (весь zxtune меняется редко относительно наших правок) +
+          # запасной restore-key, чтобы хоть частичный кэш взять, если точного совпадения нет
+          key: ccache-zxtune-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            ccache-zxtune-${{ runner.os }}-
+
+      # ---- Кэш самого клона zxtune (bitbucket + submodules) — это то, что реально ест 45 минут ----
+      - name: Cache zxtune checkout
+        id: cache-zxtune
+        uses: actions/cache@v4
+        with:
+          path: zxtune
+          key: zxtune-src-v1-${{ env.CACHE_BUST }}
+
+      - name: Clone zxtune (only on cache miss)
+        if: steps.cache-zxtune.outputs.cache-hit != 'true'
+        run: git clone https://bitbucket.org/zxtune/zxtune.git --recursive --depth 1 zxtune
+
+      # ---- Наши файлы едут внутрь дерева zxtune, как apps/zxplay ----
+      - name: Drop zxplay into apps/
+        run: |
+          mkdir -p zxtune/apps/zxplay
+          cp src/zxplay.cpp zxtune/apps/zxplay/zxplay.cpp
+          cp src/Makefile zxtune/apps/zxplay/Makefile
+
+      - name: Configure ccache masquerade
+        run: |
+          echo "/usr/lib/ccache" >> "$GITHUB_PATH"
+          echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+          echo "CCACHE_MAXSIZE=2G" >> "$GITHUB_ENV"
+        # /usr/lib/ccache на Ubuntu уже содержит симлинки g++/gcc/c++ -> ccache,
+        # так что их системе сборки не нужно ничего знать про ccache вообще —
+        # она вызывает "g++" как обычно, просто из другого PATH-а.
+
+      - name: Build zxplay
+        working-directory: zxtune/apps/zxplay
+        run: make platform=linux -s -Wno-everything -j"$(nproc)"
+
+      - name: ccache stats
+        run: ccache -s
+
+      # ---- Собранный бинарник у их make-системы лежит не пойми где по умолчанию,
+      #      поэтому ищем руками вместо того чтобы гадать путь ----
+      - name: Locate built binary
+        id: locate
+        working-directory: zxtune/apps/zxplay
+        run: |
+          BIN="$(find . -maxdepth 4 -type f -name 'zxplay*' -executable | head -n1)"
+          if [ -z "$BIN" ]; then
+            echo "::error::zxplay binary not found after build"
+            find . -maxdepth 4
+            exit 1
+          fi
+          echo "bin=$(realpath "$BIN")" >> "$GITHUB_OUTPUT"
+
+      # ---- Собственно рендер: test/test.spc -> test.wav ----
+      - name: Render test.spc to WAV
+        run: |
+          mkdir -p out
+          "${{ steps.locate.outputs.bin }}" test/test.spc --output=out/test.wav | tee out/info.txt
+
+      # ---- Красивая страничка вокруг wav-а: заголовок/автор/длительность из info.txt + <audio> ----
+      - name: Build preview page
+        run: |
+          TITLE="$(grep '^Title:'    out/info.txt | sed 's/^Title:[[:space:]]*//')"
+          AUTHOR="$(grep '^Author:'  out/info.txt | sed 's/^Author:[[:space:]]*//')"
+          DURATION="$(grep '^Duration:' out/info.txt | sed 's/^Duration:[[:space:]]*//')"
+          cat > out/index.html <<HTML
+          <!doctype html>
+          <html lang="ru">
+          <head>
+            <meta charset="utf-8">
+            <title>${TITLE} — zxplay render</title>
+            <style>
+              body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; }
+              audio { width: 100%; margin-top: 1rem; }
+              dl { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }
+              dt { font-weight: 600; color: #555; }
+              pre { background: #f4f4f4; padding: 1rem; border-radius: 8px; overflow-x: auto; }
+            </style>
+          </head>
+          <body>
+            <h1>${TITLE}</h1>
+            <dl>
+              <dt>Author</dt><dd>${AUTHOR}</dd>
+              <dt>Duration</dt><dd>${DURATION} ms</dd>
+              <dt>Source</dt><dd>test/test.spc, rendered via zxplay + ZXTune</dd>
+            </dl>
+            <audio controls src="test.wav"></audio>
+            <h2>Full zxplay output</h2>
+            <pre>$(cat out/info.txt)</pre>
+          </body>
+          </html>
+          HTML
+
+      # ---- Публикуем страничку + wav через artifact.ci ----
+      - name: Upload preview
+        uses: mmkal/artifact.ci/upload@main
+        with:
+          path: out

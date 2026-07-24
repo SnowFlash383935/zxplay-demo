@@ -82,10 +82,10 @@ jobs:
         id: locate
         working-directory: zxtune/apps/zxplay
         run: |
-          BIN="$(find . -maxdepth 4 -type f -name 'zxplay*' -executable | head -n1)"
+          BIN="$(find .. -type f -name 'zxplay*' -executable | head -n1)"
           if [ -z "$BIN" ]; then
             echo "::error::zxplay binary not found after build"
-            find . -maxdepth 4
+            
             exit 1
           fi
           echo "bin=$(realpath "$BIN")" >> "$GITHUB_OUTPUT"
